@@ -16,6 +16,7 @@
 
 if ( !defined( 'ABSPATH' ) ) exit('You shall not pass');
 
+define('ACTIVE_TO_USE_META', FALSE);
 define('ACTIVE_TO_POSTMETA', '_active_to');
 define('ACTIVE_TO_LABEL', 'До: ');
 define('ACTIVE_TO_DEFAULT_SECONDS', DAY_IN_SECONDS * 2);
@@ -90,7 +91,13 @@ function date_to_field($post)
 
     if ( $can_publish ) : // Contributors don't get to choose the date of publish
 
-        $post_date = get_post_meta( $post->ID, ACTIVE_TO_POSTMETA, true );
+        if( ACTIVE_TO_USE_META ) {
+            $post_date = get_post_meta( $post->ID, ACTIVE_TO_POSTMETA, true );
+        }
+        else {
+            $post_date = $post->post_modified;
+        }
+        
         if( !$post_date ) {
             $now = current_time( 'mysql' );
             $post_date = date( 'Y-m-d H:i:s', strtotime( $now ) + ACTIVE_TO_DEFAULT_SECONDS );
@@ -343,14 +350,29 @@ function date_to_field($post)
     <?php */
 }
 
-add_action( 'save_post', 'save_postdata', 10, 3 );
-function save_postdata($postid, $post, $update)
-{
-    if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) return false;
-    if ( !current_user_can( 'edit_page', $postid ) ) return false;
-    if(empty($postid) || $_POST['post_type'] == 'article' ) return false;
+add_action( 'pending_overdue_post', 'pending_overdue_post', $priority = 10, $accepted_args = 1 );
+function pending_overdue_post($post_ID) {
+    if( !$post_ID = intval($post_ID) ) return false;
 
-    // if ( !empty( $post_data['edit_date'] ) ) {}
+    $_post = array(
+        'ID' => $post_ID,
+        'post_status' => 'pending',
+    );
+
+    wp_update_post( $_post );
+}
+
+if( ACTIVE_TO_USE_META ) {
+    add_action( 'save_post', 'save_post_at_date_to', 10, 3 );
+}
+else {
+    add_filter( 'wp_insert_post_data', 'update_modified_at_date_to', 10, 2  );
+    add_action( 'pre_post_update', function( $post_ID, $data ) {
+        wp_unschedule_event( strtotime( $data['post_modified'] ), 'pending_overdue_post', array($post_ID) );
+    }, $priority = 10, $accepted_args = 2 );
+}
+
+function get_date_to_from_post() {
     $aa = $_POST['aa_to']; // Год
     $mm = $_POST['mm_to']; // Месяц
     $jj = $_POST['jj_to']; // День
@@ -366,14 +388,40 @@ function save_postdata($postid, $post, $update)
     $mn = ($mn > 59 ) ? $mn -60 : $mn;
     $ss = ($ss > 59 ) ? $ss -60 : $ss;
 
-    $post_date_to = sprintf( "%04d-%02d-%02d %02d:%02d:%02d", $aa, $mm, $jj, $hh, $mn, $ss );
+    return sprintf( "%04d-%02d-%02d %02d:%02d:%02d", $aa, $mm, $jj, $hh, $mn, $ss );
+}
+
+/**
+ * @since 2.7.0
+ */
+function update_modified_at_date_to($data, $postarr) {
+    $data['post_modified'] = get_date_to_from_post();
+    $data['post_modified_gmt'] = get_gmt_from_date( $data['post_modified'] );
+
+    $time = strtotime( $data['post_modified_gmt'] );
+    $now = current_time( 'timestamp', true );
+
+    if( $time < $now && !empty($postarr['ID']) ) {
+        wp_schedule_single_event( $time, 'pending_overdue_post', array(intval($postarr['ID'])) );
+    }
+
+    return $data;
+}
+
+function save_post_at_date_to($postid, $post, $update)
+{
+    if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) return false;
+    if ( !current_user_can( 'edit_page', $postid ) ) return false;
+    if(empty($postid) || $_POST['post_type'] == 'article' ) return false;
+
+    $post_date_to = get_date_to_from_post();
     $valid_date = wp_checkdate( $mm, $jj, $aa, $post_date_to );
     if ( !$valid_date ) {
         return new WP_Error( 'invalid_date', __( 'Invalid date to.' ) );
     }
 
     /**
-     * @todo think about. Need?
+     * @todo think about. #Need?
      */
     if( false ) {
         $post_date_to_gmt = get_gmt_from_date( $post_date_to );
@@ -381,24 +429,4 @@ function save_postdata($postid, $post, $update)
     }
 
     update_post_meta( $postid, ACTIVE_TO_POSTMETA, $post_date_to );
-
-    // if( !$_POST['publish_in_frontpage'] )
-
-    // remove_action( 'save_post', 'save_postdata', 10, 3 );
-
-    // if($_POST['action'] == 'editpost') {
-    //     delete_post_meta($postid, 'publish_in_frontpage');
-    // }
-
-    // add_post_meta($postid, 'publish_in_frontpage', $_POST['publish_in_frontpage']);
-
-    // $post = array(
-    //     'ID' => $postid,
-    //     'post_modified' => '2018-11-21 12:00:00',
-    //     'post_modified_gmt' => '2018-11-21 9:00:00',
-    // );
-
-    // wp_update_post( $post );
-
-    // add_action( 'save_post', 'save_postdata', 10, 3 );
 }
